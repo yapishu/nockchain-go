@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nockchain Go · WebAssembly example</title>
+<body>
+<main>
+  <h1>Nockchain Go in your browser</h1>
+  <p>This example derives a receiving address from a public extended key. It runs locally in WebAssembly.</p>
+  <p id="status" role="status">Loading the Go runtime…</p>
+  <form id="receive">
+    <p><label for="zpub">Public extended key (zpub)</label><br><textarea id="zpub" rows="4" cols="48" required spellcheck="false" autocomplete="off"></textarea></p>
+    <p><label for="index">Receiving index</label><br><input id="index" type="number" min="0" max="2147483647" step="1" value="0" required></p>
+    <button id="derive" type="submit" disabled>Derive address</button>
+  </form>
+  <pre id="result" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+  <p>Reserve each receiving index in your application before giving its address to a payer. A public extended key reveals the addresses on its branch.</p>
+</main>
+<script src="./wasm_exec.js"></script>
+<script type="module">
+  import { loadNockchain } from './nockchain.mjs';
+  const status = document.querySelector('#status');
+  const result = document.querySelector('#result');
+  try {
+    const nockchain = await loadNockchain();
+    status.textContent = 'Ready. Enter a public extended key to derive an address.';
+    document.querySelector('#derive').disabled = false;
+    document.querySelector('#receive').addEventListener('submit', event => {
+      event.preventDefault();
+      result.textContent = '';
+      try {
+        const index = Number(document.querySelector('#index').value);
+        if (!Number.isInteger(index) || index < 0 || index >= 2147483648) throw new Error('Use an index from 0 to 2147483647.');
+        const address = nockchain.call('receive', { zpub: document.querySelector('#zpub').value.trim(), index });
+        result.textContent = `Address\n${address.address}\n\nLock root\n${address.lockRoot}`;
+        status.textContent = `Derived receiving index ${index}.`;
+      } catch (error) { status.textContent = error.message; }
+    });
+  } catch (error) { status.textContent = `Unable to initialize: ${error.message}`; }
+</script>
+</body>
+</html>

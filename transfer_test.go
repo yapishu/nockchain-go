@@ -58,8 +58,8 @@ func TestReferenceTransfers(t *testing.T) {
 				}
 			}
 			fee, e := MinimumTransferFeeV1(len(v.Plans), recipients)
-			if e != nil || fee != v.MinimumFee {
-				t.Errorf("fee %d, Rust %d: %v", fee, v.MinimumFee, e)
+			if e != nil || fee != consensusFee(t, v.ID) {
+				t.Errorf("fee %d, Hoon %d: %v", fee, consensusFee(t, v.ID), e)
 			}
 			noun, e := Cue(want)
 			if e != nil {
@@ -81,13 +81,13 @@ func TestTransferRejectsInvalidPlans(t *testing.T) {
 		"empty":          func(p []SpendPlanV1) []SpendPlanV1 { return nil },
 		"duplicate note": func(p []SpendPlanV1) []SpendPlanV1 { return append(p, p[0]) },
 		"wrong lock":     func(p []SpendPlanV1) []SpendPlanV1 { p[0].LockRoot = Digest{}; return p },
-		"nonfield name":  func(p []SpendPlanV1) []SpendPlanV1 { p[0].Name.First[0] = Prime; return p },
-		"balance":        func(p []SpendPlanV1) []SpendPlanV1 { p[0].Value++; return p },
-		"low fee":        func(p []SpendPlanV1) []SpendPlanV1 { p[0].Value -= p[0].Fee; p[0].Fee = 0; return p },
+		"nonfield name":  func(p []SpendPlanV1) []SpendPlanV1 { p[0].Note.Name.First[0] = Prime; return p },
+		"balance":        func(p []SpendPlanV1) []SpendPlanV1 { p[0].Note.Nicks++; return p },
+		"low fee":        func(p []SpendPlanV1) []SpendPlanV1 { p[0].Note.Nicks -= p[0].Fee; p[0].Fee = 0; return p },
 		"zero output":    func(p []SpendPlanV1) []SpendPlanV1 { p[0].Outputs[0].Nicks = 0; return p },
 		"duplicate recipient": func(p []SpendPlanV1) []SpendPlanV1 {
 			p[0].Outputs = append(p[0].Outputs, p[0].Outputs[0])
-			p[0].Value += p[0].Outputs[0].Nicks
+			p[0].Note.Nicks += p[0].Outputs[0].Nicks
 			return p
 		},
 		"nonfield recipient": func(p []SpendPlanV1) []SpendPlanV1 { p[0].Outputs[0].Recipient[0] = Prime; return p },

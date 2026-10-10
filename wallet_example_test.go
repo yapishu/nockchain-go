@@ -39,9 +39,11 @@ func ExamplePrepareTransfer() {
 	address, _ := key.Address()
 	pkh, _ := nockchain.ParseDigest(address)
 	lock, _ := nockchain.LockRoot(pkh)
+	first, _ := nockchain.NoteFirstV1(lock)
 	notes := []nockchain.UnspentNote{{
-		Name:     nockchain.NoteName{First: nockchain.Digest{1, 2, 3, 4, 5}, Last: nockchain.Digest{6, 7, 8, 9, 10}},
-		LockRoot: lock, Nicks: 10_000_000,
+		Note: nockchain.NoteV1{
+			Name:  nockchain.NoteName{First: first, Last: nockchain.Digest{6, 7, 8, 9, 10}},
+			Nicks: 10_000_000}, LockRoot: lock,
 	}}
 	plan, err := nockchain.PrepareTransfer(key.Public(), notes,
 		[]nockchain.Payment{{Address: address, Amount: "1.25"}}, nockchain.TransferOptions{})
@@ -59,5 +61,5 @@ func ExamplePrepareTransfer() {
 		panic(err)
 	}
 	fmt.Println(summary.PaymentNicks, summary.FeeNicks, len(wire) > 0)
-	// Output: 81920 458752 true
+	// Output: 81920 442368 true
 }

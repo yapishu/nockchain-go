@@ -22,3 +22,10 @@ jobs:
       - run: go test -run '^$' -fuzz FuzzParseExtendedKey -fuzztime 5s -parallel 2
       - run: go test -run '^$' -fuzz FuzzParseDigest -fuzztime 5s -parallel 2
       - run: go test -run '^$' -fuzz FuzzCue -fuzztime 5s -parallel 2
+      - run: go test -run '^$' -fuzz FuzzParseTransactionV1 -fuzztime 5s -parallel 2
+      - run: go test ./internal/wasmapi -run '^$' -fuzz FuzzCall -fuzztime 5s -parallel 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: ./scripts/build-wasm.sh
+      - run: node web/test.mjs

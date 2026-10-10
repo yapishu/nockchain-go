@@ -38,9 +38,8 @@ func DeriveReceiveAddress(zpub string, index uint32) (ReceiveAddress, error) {
 // UnspentNote describes an input from a trusted chain-state source. The library
 // does not establish that it exists, is unspent, or has reached finality.
 type UnspentNote struct {
-	Name     NoteName
+	Note     NoteV1
 	LockRoot Digest
-	Nicks    uint64
 }
 
 // Payment is a wallet address and exact decimal NOCK amount, such as "1.25".
@@ -88,7 +87,8 @@ func (p PreparedTransfer) Sign(key ExtendedKey) (TransferV1, error) {
 // PrepareTransfer consumes all supplied notes, pays the requested recipients,
 // computes fees, and adds explicit change. It accepts a public-only sender so
 // review can happen separately from signing. Supply notes controlled by that
-// exact key; select coins and verify chain state before calling this function.
+// exact key and verify chain state before calling this function. SelectTransfer
+// selects a sufficient subset when consuming every note is unnecessary.
 func PrepareTransfer(sender ExtendedKey, notes []UnspentNote, payments []Payment, options TransferOptions) (PreparedTransfer, error) {
 	if len(notes) < 1 || len(notes) > MaxTransferInputs || len(payments) < 1 || len(payments) > MaxTransferOutputs {
 		return PreparedTransfer{}, errors.New("transfer size out of range")
@@ -111,14 +111,15 @@ func PrepareTransfer(sender ExtendedKey, notes []UnspentNote, payments []Payment
 	summary := TransferSummary{InputCount: len(notes), ChangeAddress: change}
 	names := map[NoteName]bool{}
 	for _, n := range notes {
-		if _, e := n.Name.Hash(); e != nil {
+		if _, e := n.Note.Hash(); e != nil {
 			return PreparedTransfer{}, e
 		}
-		if names[n.Name] || n.LockRoot != lock || n.Nicks == 0 || n.Nicks >= Prime {
+		bound, _ := NoteFirstV1(lock)
+		if names[n.Note.Name] || n.Note.Name.First != bound || n.LockRoot != lock || n.Note.Nicks == 0 || n.Note.Nicks >= Prime {
 			return PreparedTransfer{}, errors.New("duplicate, invalid, or unauthorized input")
 		}
-		names[n.Name] = true
-		sum, c := bits.Add64(summary.InputNicks, n.Nicks, 0)
+		names[n.Note.Name] = true
+		sum, c := bits.Add64(summary.InputNicks, n.Note.Nicks, 0)
 		if c != 0 {
 			return PreparedTransfer{}, errors.New("input total overflow")
 		}
@@ -168,6 +169,9 @@ func PrepareTransfer(sender ExtendedKey, notes []UnspentNote, payments []Payment
 				withChange = append(withChange, changePKH)
 			}
 			fee, e = MinimumTransferFeeV1(len(notes), withChange)
+			if e == nil && fee > available && available >= minimum {
+				fee = available
+			}
 			if e != nil {
 				return PreparedTransfer{}, e
 			}
@@ -199,15 +203,15 @@ func PrepareTransfer(sender ExtendedKey, notes []UnspentNote, payments []Payment
 	outputCount := 0
 	for _, note := range notes {
 		inputFee := remainingFee
-		if inputFee >= note.Nicks {
-			inputFee = note.Nicks - 1
+		if inputFee >= note.Note.Nicks {
+			inputFee = note.Note.Nicks - 1
 		}
 		remainingFee -= inputFee
-		plan := SpendPlanV1{Name: note.Name, Value: note.Nicks, LockRoot: note.LockRoot, Fee: inputFee}
-		remaining := note.Nicks - inputFee
+		plan := SpendPlanV1{Note: note.Note, LockRoot: note.LockRoot, Fee: inputFee}
+		remaining := note.Note.Nicks - inputFee
 		for remaining > 0 {
 			if output >= len(amounts) {
-				return PreparedTransfer{}, errors.New("notes cannot be allocated with a nonempty output per input")
+				return PreparedTransfer{}, errors.New("input values cannot be allocated to the requested outputs")
 			}
 			value := amounts[output]
 			if value > remaining {

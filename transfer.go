@@ -2,8 +2,6 @@ package nockchain
 
 import (
 	"errors"
-	"fmt"
-	"math/bits"
 )
 
 // NoteName identifies a V1 input note by its two digests.
@@ -11,7 +9,7 @@ type NoteName struct{ First, Last Digest }
 
 func (n NoteName) noun() Noun { return List(digestNoun(n.First), digestNoun(n.Last)) }
 
-// Hash returns the name commitment used as an output seed's parent.
+// Hash returns the note-name commitment.
 func (n NoteName) Hash() (Digest, error) {
 	if !n.First.Valid() || !n.Last.Valid() {
 		return Digest{}, errors.New("invalid note name")
@@ -25,11 +23,10 @@ type PaymentV1 struct {
 	Nicks     uint64
 }
 
-// SpendPlanV1 consumes one plain single-signature note. Value and LockRoot must
+// SpendPlanV1 consumes one plain single-signature note. Note and LockRoot must
 // come from verified chain state. Every nick must be assigned to outputs or Fee.
 type SpendPlanV1 struct {
-	Name     NoteName
-	Value    uint64
+	Note     NoteV1
 	LockRoot Digest
 	Outputs  []PaymentV1
 	Fee      uint64
@@ -67,7 +64,10 @@ func (t TransferV1) Jam() ([]byte, error) {
 	return Jam(t.raw)
 }
 
+// MaxTransferInputs bounds the number of input notes in a transaction.
 const MaxTransferInputs = 64
+
+// MaxTransferOutputs bounds the total number of output seeds across inputs.
 const MaxTransferOutputs = 256
 
 // MinimumTransferFeeV1 computes the V1 fee for plain PKH inputs and outputs.
@@ -84,8 +84,8 @@ func MinimumTransferFeeV1(inputs int, recipients []Digest) (uint64, error) {
 		}
 		unique[p] = true
 	}
-	// Each merged lock metadata map has 14 leaves; a signed full PKH witness has 56.
-	return uint64(len(unique))*14*(1<<14) + uint64(inputs)*56*(1<<12), nil
+	// Each merged lock metadata map has 13 flattened leaves; a signed full PKH witness has 56.
+	return uint64(len(unique))*13*(1<<14) + uint64(inputs)*56*(1<<12), nil
 }
 
 // SignTransferV1 builds and signs up to 64 input spends with this one key. It
@@ -93,99 +93,38 @@ func MinimumTransferFeeV1(inputs int, recipients []Digest) (uint64, error) {
 // It rejects duplicate notes/recipients, mismatched locks, imbalanced values,
 // insufficient fees, and non-field amounts. Run offline; arithmetic is variable-time.
 func (k ExtendedKey) SignTransferV1(plans []SpendPlanV1) (TransferV1, error) {
-	if k.secret == nil || k.pub.z == (field{}) {
-		return TransferV1{}, errors.New("private signing key required")
-	}
-	if len(plans) < 1 || len(plans) > MaxTransferInputs {
-		return TransferV1{}, errors.New("input count out of range")
-	}
-	pkh := publicKeyHash(k.pub)
-	lock, _ := LockRoot(pkh)
-	recipients := []Digest{}
-	names := map[NoteName]bool{}
-	var fees uint64
-	// Validate every spend before producing any signature.
-	for _, p := range plans {
-		if _, e := p.Name.Hash(); e != nil {
-			return TransferV1{}, e
-		}
-		if names[p.Name] {
-			return TransferV1{}, errors.New("duplicate input note")
-		}
-		names[p.Name] = true
-		if p.LockRoot != lock {
-			return TransferV1{}, errors.New("input lock does not authorize this key")
-		}
-		if p.Value == 0 || p.Value >= Prime || p.Fee >= Prime || len(p.Outputs) == 0 {
-			return TransferV1{}, errors.New("invalid input amount or outputs")
-		}
-		total := p.Fee
-		seen := map[Digest]bool{}
-		for _, o := range p.Outputs {
-			if !o.Recipient.Valid() || o.Nicks == 0 || o.Nicks >= Prime || seen[o.Recipient] {
-				return TransferV1{}, errors.New("invalid or duplicate output")
-			}
-			seen[o.Recipient] = true
-			next, carry := bits.Add64(total, o.Nicks, 0)
-			if carry != 0 {
-				return TransferV1{}, errors.New("amount overflow")
-			}
-			total = next
-			recipients = append(recipients, o.Recipient)
-			if len(recipients) > MaxTransferOutputs {
-				return TransferV1{}, errors.New("output count out of range")
-			}
-		}
-		if total != p.Value {
-			return TransferV1{}, errors.New("input value differs from outputs plus fee")
-		}
-		next, carry := bits.Add64(fees, p.Fee, 0)
-		if carry != 0 {
-			return TransferV1{}, errors.New("fee overflow")
-		}
-		fees = next
-	}
-	minimum, e := MinimumTransferFeeV1(len(plans), recipients)
+	plansWithLocks := make([]LockedSpendPlanV1, len(plans))
+	address, e := k.Address()
 	if e != nil {
 		return TransferV1{}, e
 	}
-	if fees < minimum {
-		return TransferV1{}, fmt.Errorf("fee below minimum %d nicks", minimum)
-	}
-	var spends *nounTree
-	nilHash := hashAtom(0)
-	for _, p := range plans {
-		parent, _ := p.Name.Hash()
-		var seeds *nounTree
+	pkh, _ := ParseDigest(address)
+	lock, _ := NewPKHLockV1(1, []Digest{pkh}, nil)
+	for i, p := range plans {
+		if p.LockRoot != lock.root {
+			return TransferV1{}, errors.New("input lock does not authorize this key")
+		}
+		next := LockedSpendPlanV1{Note: p.Note, Lock: lock, Fee: p.Fee}
 		for _, o := range p.Outputs {
-			root, _ := LockRoot(o.Recipient)
-			metadata := lockMetadata(o.Recipient)
-			seed := Tuple(Noun{}, digestNoun(root), metadata, Noun{atom: o.Nicks}, digestNoun(parent))
-			metadataHash := hashCell(hashCell(hashAtom(0x6b636f6c), hashEach(Cell(Noun{}, pkhCondition(o.Recipient)))), hashCell(nilHash, nilHash))
-			regular := foldHashes(root, metadataHash, hashAtom(o.Nicks), parent)
-			seeds = treePut(seeds, newTree(seed, Noun{}, regular, hashCell(nilHash, regular), false))
+			l, e := NewPKHLockV1(1, []Digest{o.Recipient}, nil)
+			if e != nil {
+				return TransferV1{}, e
+			}
+			next.Outputs = append(next.Outputs, LockedPaymentV1{l, o.Nicks})
 		}
-		sighash := hashCell(seeds.digest(true), hashAtom(p.Fee))
-		signature, err := k.SignDigest(sighash)
-		if err != nil {
-			return TransferV1{}, err
-		}
-		public := publicNoun(k.pub)
-		sigNoun := signature.noun()
-		signatureMap := Tuple(Cell(digestNoun(pkh), Cell(public, sigNoun)), Noun{}, Noun{})
-		proof := Tuple(Noun{atom: 0x6c6c7566}, pkhCondition(pkh), Noun{atom: 1}, Cell(digestNoun(lock), Noun{}))
-		witness := Tuple(proof, signatureMap, Noun{}, Noun{})
-		proofHash := foldHashes(hashAtom(0x6c6c7566), lock, hashAtom(1), hashCell(lock, nilHash))
-		signatureMapHash := hashCell(hashCell(pkh, hashCell(mustHashNoun(public), mustHashNoun(sigNoun))), hashCell(nilHash, nilHash))
-		witnessHash := foldHashes(proofHash, signatureMapHash, nilHash, nilHash)
-		spend := Tuple(Noun{atom: 1}, witness, seeds.noun(), Noun{atom: p.Fee})
-		spendHash := foldHashes(hashAtom(1), witnessHash, seeds.digest(false), hashAtom(p.Fee))
-		pairHash := hashCell(parent, spendHash)
-		spends = treePut(spends, newTree(p.Name.noun(), spend, pairHash, pairHash, true))
+		plansWithLocks[i] = next
 	}
-	id := hashCell(hashAtom(1), spends.digest(false))
-	return TransferV1{Tuple(Noun{atom: 1}, digestNoun(id), spends.noun()), id, true}, nil
+	tx, e := PrepareTransactionV1(plansWithLocks)
+	if e != nil {
+		return TransferV1{}, e
+	}
+	tx, e = tx.Sign(k)
+	if e != nil {
+		return TransferV1{}, e
+	}
+	return TransferV1{tx.raw, tx.id, true}, nil
 }
+
 func digestNoun(d Digest) Noun {
 	var a [5]Noun
 	for i, v := range d {
@@ -201,12 +140,6 @@ func publicNoun(p point) Noun {
 		y[i] = Noun{atom: p.y[i]}
 	}
 	return Tuple(Tuple(x[:]...), Tuple(y[:]...), Noun{atom: 1})
-}
-func pkhCondition(p Digest) Noun {
-	return List(Tuple(Noun{atom: 0x686b70}, Noun{atom: 1}, Tuple(digestNoun(p), Noun{}, Noun{})))
-}
-func lockMetadata(p Digest) Noun {
-	return Tuple(Cell(Noun{atom: 0x6b636f6c}, Cell(Noun{}, pkhCondition(p))), Noun{}, Noun{})
 }
 func mustHashNoun(n Noun) Digest {
 	d, e := HashNoun(n)

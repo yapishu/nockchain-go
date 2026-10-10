@@ -11,7 +11,7 @@ func TestPrepareTransfer(t *testing.T) {
 	key, _ := Master(seed)
 	notes := []UnspentNote{}
 	for _, p := range fixture.Plans {
-		notes = append(notes, UnspentNote{p.Name, p.LockRoot, p.Value})
+		notes = append(notes, UnspentNote{p.Note, p.LockRoot})
 	}
 	address := fixture.Plans[0].Outputs[0].Recipient.String()
 	payments := []Payment{{address, "10"}, {address, "20"}}
@@ -24,7 +24,7 @@ func TestPrepareTransfer(t *testing.T) {
 		t.Fatal("review totals differ")
 	}
 	// Caller mutations cannot change the signed payment.
-	notes[0].Nicks = 1
+	notes[0].Note.Nicks = 1
 	payments[0].Amount = "999"
 	summary.Payments[0].Amount = "999"
 	if prepared.Summary().Payments[0].Amount != "10" {
@@ -52,7 +52,8 @@ func TestTransferFeeAndChange(t *testing.T) {
 	recipient := p.Outputs[0].Recipient
 	payment := []Payment{{recipient.String(), "1"}}
 	minimum, _ := MinimumTransferFeeV1(1, []Digest{recipient})
-	note := UnspentNote{p.Name, p.LockRoot, 65536 + minimum}
+	note := UnspentNote{p.Note, p.LockRoot}
+	note.Note.Nicks = 65536 + minimum
 	plan, e := PrepareTransfer(key.Public(), []UnspentNote{note}, payment, TransferOptions{})
 	if e != nil {
 		t.Fatal(e)
@@ -65,7 +66,7 @@ func TestTransferFeeAndChange(t *testing.T) {
 		t.Fatal(e)
 	}
 	// A supplied change address is committed and included in the fee calculation.
-	note.Nicks += 2_000_000
+	note.Note.Nicks += 2_000_000
 	plan, e = PrepareTransfer(key, []UnspentNote{note}, payment, TransferOptions{ChangeAddress: recipient.String()})
 	if e != nil {
 		t.Fatal(e)
@@ -77,7 +78,7 @@ func TestTransferFeeAndChange(t *testing.T) {
 	if _, e = plan.Sign(key); e != nil {
 		t.Fatal(e)
 	}
-	for name, opts := range map[string]TransferOptions{"low fee": {FeeNicks: 1}, "overspend": {FeeNicks: note.Nicks}, "bad change": {ChangeAddress: "invalid"}} {
+	for name, opts := range map[string]TransferOptions{"low fee": {FeeNicks: 1}, "overspend": {FeeNicks: note.Note.Nicks}, "bad change": {ChangeAddress: "invalid"}} {
 		t.Run(name, func(t *testing.T) {
 			if _, e := PrepareTransfer(key, []UnspentNote{note}, payment, opts); e == nil {
 				t.Fatal("invalid options accepted")
